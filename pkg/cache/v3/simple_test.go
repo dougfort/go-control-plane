@@ -88,6 +88,91 @@ type logger struct {
 	b *testing.B
 }
 
+type snapshotWithNode struct {
+	node     string
+	snapshot cache.Snapshot
+}
+
+func singletonProducer(node string) <-chan snapshotWithNode {
+	ch := make(chan snapshotWithNode, 1)
+
+	go func() {
+		version := "v1"
+
+		ch <- snapshotWithNode{
+			node,
+			cache.NewSnapshotWithResources(
+				version,
+				cache.SnapshotResources{
+					Endpoints: []types.Resource{testEndpoint},
+					Clusters:  []types.Resource{testCluster},
+					Routes:    []types.Resource{testRoute},
+					Listeners: []types.Resource{testListener},
+					Runtimes:  []types.Resource{testRuntime},
+					Secrets:   []types.Resource{testSecret[0]},
+				},
+			),
+		}
+
+		close(ch)
+	}()
+
+	return ch
+}
+
+func multiResourceProducer(node string) <-chan snapshotWithNode {
+	ch := make(chan snapshotWithNode, 1)
+
+	go func() {
+		ch <- snapshotWithNode{
+			node,
+			cache.NewSnapshotWithResources(
+				version,
+				cache.SnapshotResources{Endpoints: []types.Resource{testEndpoint}},
+			),
+		}
+		ch <- snapshotWithNode{
+			node,
+			cache.NewSnapshotWithResources(
+				version,
+				cache.SnapshotResources{Clusters: []types.Resource{testCluster}},
+			),
+		}
+		ch <- snapshotWithNode{
+			node,
+			cache.NewSnapshotWithResources(
+				version,
+				cache.SnapshotResources{Routes: []types.Resource{testRoute}},
+			),
+		}
+		ch <- snapshotWithNode{
+			node,
+			cache.NewSnapshotWithResources(
+				version,
+				cache.SnapshotResources{Listeners: []types.Resource{testListener}},
+			),
+		}
+		ch <- snapshotWithNode{
+			node,
+			cache.NewSnapshotWithResources(
+				version,
+				cache.SnapshotResources{Runtimes: []types.Resource{testRuntime}},
+			),
+		}
+		ch <- snapshotWithNode{
+			node,
+			cache.NewSnapshotWithResources(
+				version,
+				cache.SnapshotResources{Secrets: []types.Resource{testSecret[0]}},
+			),
+		}
+
+		close(ch)
+	}()
+
+	return ch
+}
+
 func (log logger) Debugf(format string, args ...interface{}) { log.t.Logf(format, args...) }
 func (log logger) Infof(format string, args ...interface{})  { log.t.Logf(format, args...) }
 func (log logger) Warnf(format string, args ...interface{})  { log.t.Logf(format, args...) }
@@ -417,15 +502,17 @@ func BenchmarkLoadedSnapshotCache(b *testing.B) {
 		value := make(chan cache.Response, len(testTypes))
 
 		for n := 0; n < b.N; n++ {
-			if err := c.SetSnapshot(key, snapshot); err != nil {
-				b.Fatal(err)
-			}
-
-			var counter int
 			for _, typ := range testTypes {
 				c.CreateWatch(&discovery.DiscoveryRequest{TypeUrl: typ, ResourceNames: names[typ]}, value)
 			}
 
+			for swn := range multiResourceProducer(key) {
+				if err := c.SetSnapshot(swn.node, swn.snapshot); err != nil {
+					b.Fatal(err)
+				}
+			}
+
+			var counter int
 		SELECT_LOOP:
 			for {
 				select {
