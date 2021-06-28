@@ -93,25 +93,28 @@ type snapshotWithNode struct {
 	snapshot cache.Snapshot
 }
 
-func singletonProducer(node string) <-chan snapshotWithNode {
+func countedProducer(node string, count int) <-chan snapshotWithNode {
 	ch := make(chan snapshotWithNode, 1)
 
 	go func() {
-		version := "v1"
+		for i := 0; i < count; i++ {
 
-		ch <- snapshotWithNode{
-			node,
-			cache.NewSnapshotWithResources(
-				version,
-				cache.SnapshotResources{
-					Endpoints: []types.Resource{testEndpoint},
-					Clusters:  []types.Resource{testCluster},
-					Routes:    []types.Resource{testRoute},
-					Listeners: []types.Resource{testListener},
-					Runtimes:  []types.Resource{testRuntime},
-					Secrets:   []types.Resource{testSecret[0]},
-				},
-			),
+			version := fmt.Sprintf("version%03d", i)
+
+			ch <- snapshotWithNode{
+				node,
+				cache.NewSnapshotWithResources(
+					version,
+					cache.SnapshotResources{
+						Endpoints: []types.Resource{testEndpoint},
+						Clusters:  []types.Resource{testCluster},
+						Routes:    []types.Resource{testRoute},
+						Listeners: []types.Resource{testListener},
+						Runtimes:  []types.Resource{testRuntime},
+						Secrets:   []types.Resource{testSecret[0]},
+					},
+				),
+			}
 		}
 
 		close(ch)
@@ -505,12 +508,14 @@ func BenchmarkLoadedSnapshotCache(b *testing.B) {
 			for _, typ := range testTypes {
 				c.CreateWatch(&discovery.DiscoveryRequest{TypeUrl: typ, ResourceNames: names[typ]}, value)
 			}
-
-			for swn := range multiResourceProducer(key) {
-				if err := c.SetSnapshot(swn.node, swn.snapshot); err != nil {
-					b.Fatal(err)
+			go func() {
+				for swn := range multiResourceProducer(key) {
+					if err := c.SetSnapshot(swn.node, swn.snapshot); err != nil {
+						b.Logf("SetSnapshot failed: %s", err)
+						break
+					}
 				}
-			}
+			}()
 
 			var counter int
 		SELECT_LOOP:
@@ -523,6 +528,108 @@ func BenchmarkLoadedSnapshotCache(b *testing.B) {
 					}
 				case <-time.After(time.Second):
 					b.Fatalf("timed out after %d of %d snapshot responses", counter, len(testTypes))
+				}
+			}
+		}
+	})
+}
+
+func BenchmarkCountedSnapshotCache(b *testing.B) {
+	const snapshotCount = 1000
+
+	b.Run("counted", func(b *testing.B) {
+		c := cache.NewSnapshotCache(true, group{}, logger{t: &testing.T{}})
+		values := make(map[string]chan cache.Response)
+		requests := make(map[string]*discovery.DiscoveryRequest)
+		cancels := make(map[string]func())
+
+		for n := 0; n < b.N; n++ {
+			for _, typ := range testTypes {
+				requests[typ] = &discovery.DiscoveryRequest{TypeUrl: typ, ResourceNames: names[typ]}
+				values[typ] = make(chan cache.Response, 1)
+				cancels[typ] = c.CreateWatch(requests[typ], values[typ])
+			}
+			go func() {
+				for swn := range countedProducer(key, snapshotCount) {
+					if err := c.SetSnapshot(swn.node, swn.snapshot); err != nil {
+						b.Logf("SetSnapshot failed: %s", err)
+						break
+					}
+				}
+			}()
+
+			expectedCount := snapshotCount * len(testTypes)
+			var counter int
+		SELECT_LOOP:
+			for {
+				select {
+				case <-values[testTypes[0]]:
+					testType := testTypes[0]
+					if cancels[testType] != nil {
+						cancels[testType]()
+					}
+					counter += 1
+					if counter == expectedCount {
+						break SELECT_LOOP
+					}
+					cancels[testType] = c.CreateWatch(
+						requests[testType],
+						values[testType],
+					)
+				case <-values[testTypes[1]]:
+					testType := testTypes[1]
+					if cancels[testType] != nil {
+						cancels[testType]()
+					}
+					counter += 1
+					if counter == expectedCount {
+						break SELECT_LOOP
+					}
+					cancels[testType] = c.CreateWatch(
+						requests[testType],
+						values[testType],
+					)
+				case <-values[testTypes[2]]:
+					testType := testTypes[2]
+					if cancels[testType] != nil {
+						cancels[testType]()
+					}
+					counter += 1
+					if counter == expectedCount {
+						break SELECT_LOOP
+					}
+					cancels[testType] = c.CreateWatch(
+						requests[testType],
+						values[testType],
+					)
+				case <-values[testTypes[3]]:
+					testType := testTypes[3]
+					if cancels[testType] != nil {
+						cancels[testType]()
+					}
+					counter += 1
+					if counter == expectedCount {
+						break SELECT_LOOP
+					}
+					cancels[testType] = c.CreateWatch(
+						requests[testType],
+						values[testType],
+					)
+				case <-values[testTypes[4]]:
+					testType := testTypes[4]
+					if cancels[testType] != nil {
+						cancels[testType]()
+					}
+					counter += 1
+					if counter == expectedCount {
+						break SELECT_LOOP
+					}
+					cancels[testType] = c.CreateWatch(
+						requests[testType],
+						values[testType],
+					)
+				case <-time.After(30 * time.Second):
+					b.Fatalf("timed out after %d of %d snapshot responses", counter, expectedCount)
 				}
 			}
 		}
