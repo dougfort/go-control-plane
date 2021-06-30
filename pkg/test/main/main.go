@@ -24,6 +24,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"runtime"
+	"runtime/pprof"
 	"time"
 
 	"github.com/envoyproxy/go-control-plane/pkg/cache/v3"
@@ -137,6 +139,8 @@ func init() {
 
 // main returns code 1 if any of the batches failed to pass all requests
 func main() {
+	runtime.SetBlockProfileRate(1)
+
 	flag.Parse()
 	ctx := context.Background()
 
@@ -242,6 +246,17 @@ func main() {
 			os.Exit(1)
 		}
 	}
+
+	p := pprof.Lookup("block")
+	if p == nil {
+		p = pprof.NewProfile("block")
+	}
+	f, err := os.Create(fmt.Sprintf("block_profile_%s.pb.gz", mode))
+	if err != nil {
+		log.Fatal("could not create block profile: ", err)
+	}
+	p.WriteTo(f, 1)
+	f.Close()
 
 	log.Printf("Test for %s passed!\n", mode)
 }
